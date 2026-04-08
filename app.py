@@ -204,7 +204,7 @@ if st.session_state.get('fetch_data', False):
             weather_data[var] = hourly.Variables(i).ValuesAsNumpy()[:len(time_index)]
         weather_df = pd.DataFrame(weather_data).set_index('datetime').head(24)
         
-        # --- 2. THE FIX: Explicitly fetch TRUE Current Weather bypasssing midnight logic ---
+        # --- 2. Explicitly fetch TRUE Current Weather bypassing midnight logic ---
         try:
             daily_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,cloud_cover,wind_speed_10m,wind_gusts_10m&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset&timezone=auto"
             daily_data = requests.get(daily_url).json()
@@ -249,9 +249,12 @@ if st.session_state.get('fetch_data', False):
         st.session_state['app_ready'] = True
         st.session_state['fetch_data'] = False
 
-# REACTIVE UI
+# REACTIVE UI (With UPDATED Bulletproof Session State Check)
 if st.session_state.get('app_ready', False):
-    if 'base_median' not in st.session_state or 'weather_df' not in st.session_state:
+    # THE FIX: Check for the exact variable that crashed the app (current_temp)
+    required_keys = ['base_median', 'weather_df', 'current_temp']
+    
+    if not all(key in st.session_state for key in required_keys):
         st.warning("⚠️ Session memory was cleared. Please click 'Run AI Optimization' in the sidebar to refresh the dashboard.")
     else:
         scale = (num_people / 4.0) * (house_size / 120.0) * (1.45 if has_ac else 1.0)
@@ -288,7 +291,6 @@ if st.session_state.get('app_ready', False):
         with tab2:
             st.markdown("### 🛰️ Live Telemetry & Environmental Data")
             
-            # NOW USING TRUE LIVE DATA
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Current Temp", f"{st.session_state['current_temp']:.1f}°C")
             c2.metric("Today's Range", f"H: {st.session_state['today_high']:.1f}° | L: {st.session_state['today_low']:.1f}°")
