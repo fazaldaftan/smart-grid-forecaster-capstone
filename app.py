@@ -89,8 +89,18 @@ def get_coordinates(city_name):
 
 @st.cache_resource
 def load_models():
-    try: return joblib.load('xgb_model.pkl'), joblib.load('quantile_models.pkl'), joblib.load('shap_explainer_live.pkl'), pickle.load(open('feature_cols.pkl', 'rb'))
-    except: return None, None, None, None
+    # FIX: We now explicitly catch and display the exact error causing models to fail.
+    try: 
+        xgb = joblib.load('xgb_model.pkl')
+        quantiles = joblib.load('quantile_models.pkl')
+        explainer = joblib.load('shap_explainer_live.pkl')
+        with open('feature_cols.pkl', 'rb') as f:
+            feature_cols = pickle.load(f)
+        return xgb, quantiles, explainer, feature_cols
+    except Exception as e: 
+        st.error(f"⚠️ CRITICAL MODEL ERROR: {e}")
+        st.info("Check if all .pkl files are pushed to GitHub, and ensure they aren't corrupted by Git LFS.")
+        return None, None, None, None
 
 def engineer_features(df, feature_cols):
     df = df.copy()
@@ -99,22 +109,18 @@ def engineer_features(df, feature_cols):
     for col, period in [('hour', 24), ('dayofweek', 7), ('month', 12)]:
         df[f'{col}_sin'], df[f'{col}_cos'] = np.sin(2 * np.pi * df[col] / period), np.cos(2 * np.pi * df[col] / period)
     
-    # FIX 1: Modern Pandas bfill() syntax
     df['temp_lag1'] = df['temperature_2m'].shift(1).bfill()
-    
     df['hdd'] = np.maximum(18.0 - df['temperature_2m'], 0)
     df['cdd'] = np.maximum(df['temperature_2m'] - 18.0, 0)
     df['cloud_impact'] = df['cloud_cover'] / 100.0
     df['effective_radiation'] = df['shortwave_radiation'] * (1 - df['cloud_impact'])
     
-    # Pad history lags with zero (since we are using live forward-looking data)
+    target = 'energy_kwh'
     for lag in [1, 2, 3, 6, 12, 24, 48, 168]: df[f'lag_{lag}h'] = 0.0
     for w in [6, 12, 24, 48]: 
         df[f'roll_mean_{w}h'] = 0.0
         df[f'roll_std_{w}h'] = 0.0
         
-    # FIX 2: Missing Column Safety Padding
-    # Ensure every column XGBoost expects is present in the DataFrame before slicing
     for c in feature_cols:
         if c not in df.columns:
             df[c] = 0.0
@@ -125,8 +131,7 @@ def generate_smart_schedule(forecast, weather_df, solar_kw, batt_cap):
     data = []
     curr_batt = 0.0 
     for i, demand in enumerate(forecast):
-        h = i # Hour of forecast
-        # Dynamic Time-of-Use Pricing (TOU)
+        h = i 
         price = 7.47 if h < 6 else 12.45 if h < 9 else 9.96 if h < 16 else 23.24 if h < 21 else 9.13
         
         rad = weather_df['shortwave_radiation'].iloc[i] if 'shortwave_radiation' in weather_df.columns else 0
@@ -140,7 +145,7 @@ def generate_smart_schedule(forecast, weather_df, solar_kw, batt_cap):
             curr_batt += charge
             net_grid = 0
         else: 
-            if price >= 15: # Smart Logic: Discharge only when grid is expensive
+            if price >= 15: 
                 discharge = min(net_pre_batt, curr_batt)
                 curr_batt -= discharge
             net_grid = net_pre_batt - discharge
@@ -152,35 +157,40 @@ def generate_smart_schedule(forecast, weather_df, solar_kw, batt_cap):
 xgb, quantiles, explainer, feature_cols = load_models()
 
 if st.session_state.get('fetch_data', False):
-    if lat is None: lat, lon, resolved_city, country = get_coordinates(city_input)
-    if lat is not None:
-        st.session_state['lat'], st.session_state['lon'] = lat, lon
-        st.session_state['location_title'] = f"{resolved_city}, {country}" if country else resolved_city
-        
-        # Weather API
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,cloud_cover,shortwave_radiation,wind_speed_10m,wind_gusts_10m,relative_humidity_2m&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset&timezone=auto"
-        w_res = requests.get(url).json()
-        
-        w_df = pd.DataFrame(w_res['hourly']).set_index(pd.to_datetime(w_res['hourly']['time'])).head(24)
-        st.session_state['weather_df'] = w_df
-        st.session_state['today_high'] = w_res['daily']['temperature_2m_max'][0]
-        st.session_state['today_low'] = w_res['daily']['temperature_2m_min'][0]
-        st.session_state['sunrise'] = w_res['daily']['sunrise'][0][-5:]
-        st.session_state['sunset'] = w_res['daily']['sunset'][0][-5:]
-        
-        # AQI API
-        aq_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi,pm10,pm2_5"
-        aq_res = requests.get(aq_url).json()
-        st.session_state['aqi'] = aq_res['current']['us_aqi']
-        
-        # AI Preds
-        feats = engineer_features(w_df, feature_cols)
-        st.session_state['base_demand'] = quantiles[0.50].predict(feats)
-        st.session_state['user_feat'] = feats
-        st.session_state['app_ready'] = True
+    # FIX: Safety Check to prevent the app from crashing if models fail to load
+    if feature_cols is None:
+        st.warning("Cannot run AI Optimization: Models are missing or failed to load. Please check the error message above.")
         st.session_state['fetch_data'] = False
+    else:
+        if lat is None: lat, lon, resolved_city, country = get_coordinates(city_input)
+        if lat is not None:
+            st.session_state['lat'], st.session_state['lon'] = lat, lon
+            st.session_state['location_title'] = f"{resolved_city}, {country}" if country else resolved_city
+            
+            # Weather API
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,cloud_cover,shortwave_radiation,wind_speed_10m,wind_gusts_10m,relative_humidity_2m&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset&timezone=auto"
+            w_res = requests.get(url).json()
+            
+            w_df = pd.DataFrame(w_res['hourly']).set_index(pd.to_datetime(w_res['hourly']['time'])).head(24)
+            st.session_state['weather_df'] = w_df
+            st.session_state['today_high'] = w_res['daily']['temperature_2m_max'][0]
+            st.session_state['today_low'] = w_res['daily']['temperature_2m_min'][0]
+            st.session_state['sunrise'] = w_res['daily']['sunrise'][0][-5:]
+            st.session_state['sunset'] = w_res['daily']['sunset'][0][-5:]
+            
+            # AQI API
+            aq_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi,pm10,pm2_5"
+            aq_res = requests.get(aq_url).json()
+            st.session_state['aqi'] = aq_res['current']['us_aqi']
+            
+            # AI Preds
+            feats = engineer_features(w_df, feature_cols)
+            st.session_state['base_demand'] = quantiles[0.50].predict(feats)
+            st.session_state['user_feat'] = feats
+            st.session_state['app_ready'] = True
+            st.session_state['fetch_data'] = False
 
-if st.session_state.get('app_ready', False):
+if st.session_state.get('app_ready', False) and feature_cols is not None:
     scale = (num_people / 4.0) * (house_size / 120.0) * (1.45 if has_ac else 1.0)
     demand = np.clip(st.session_state['base_demand'] * scale, 0, None)
     sched = generate_smart_schedule(demand, st.session_state['weather_df'], solar_kw, battery_capacity)
