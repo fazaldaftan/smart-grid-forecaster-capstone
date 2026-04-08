@@ -98,7 +98,10 @@ def engineer_features(df, feature_cols):
     df['is_weekend'] = (df['dayofweek'] >= 5).astype(int)
     for col, period in [('hour', 24), ('dayofweek', 7), ('month', 12)]:
         df[f'{col}_sin'], df[f'{col}_cos'] = np.sin(2 * np.pi * df[col] / period), np.cos(2 * np.pi * df[col] / period)
-    df['temp_lag1'] = df['temperature_2m'].shift(1).fillna(method='bfill')
+    
+    # FIX: Modern Pandas bfill() syntax
+    df['temp_lag1'] = df['temperature_2m'].shift(1).bfill()
+    
     df['hdd'] = np.maximum(18.0 - df['temperature_2m'], 0)
     df['cdd'] = np.maximum(df['temperature_2m'] - 18.0, 0)
     df['cloud_impact'] = df['cloud_cover'] / 100.0
@@ -210,7 +213,9 @@ if st.session_state.get('app_ready', False):
         f1, f2, f3 = st.columns(3)
         f1.metric("Baseline Cost (No Assets)", f"₹{baseline_cost:.2f}")
         f2.metric("Optimized Cost (AI System)", f"₹{optimized_cost:.2f}")
-        f3.metric("Estimated Daily Savings", f"₹{savings:.2f}", delta=f"{(savings/baseline_cost*100):.1f}% ROI", delta_color="normal")
+        
+        roi_percentage = (savings / baseline_cost * 100) if baseline_cost > 0 else 0
+        f3.metric("Estimated Daily Savings", f"₹{savings:.2f}", delta=f"{roi_percentage:.1f}% ROI", delta_color="normal")
         
         st.divider()
         st.markdown("### 🌳 Carbon Neutrality Offset")
