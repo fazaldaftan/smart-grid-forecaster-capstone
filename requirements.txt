@@ -8,3 +8,5 @@ requests-cache
 retry-requests
 matplotlib
 shap
+xgboost
+scikit-learn
