@@ -99,18 +99,26 @@ def engineer_features(df, feature_cols):
     for col, period in [('hour', 24), ('dayofweek', 7), ('month', 12)]:
         df[f'{col}_sin'], df[f'{col}_cos'] = np.sin(2 * np.pi * df[col] / period), np.cos(2 * np.pi * df[col] / period)
     
-    # FIX: Modern Pandas bfill() syntax
+    # FIX 1: Modern Pandas bfill() syntax
     df['temp_lag1'] = df['temperature_2m'].shift(1).bfill()
     
     df['hdd'] = np.maximum(18.0 - df['temperature_2m'], 0)
     df['cdd'] = np.maximum(df['temperature_2m'] - 18.0, 0)
     df['cloud_impact'] = df['cloud_cover'] / 100.0
     df['effective_radiation'] = df['shortwave_radiation'] * (1 - df['cloud_impact'])
-    target = 'energy_kwh'
+    
+    # Pad history lags with zero (since we are using live forward-looking data)
     for lag in [1, 2, 3, 6, 12, 24, 48, 168]: df[f'lag_{lag}h'] = 0.0
     for w in [6, 12, 24, 48]: 
         df[f'roll_mean_{w}h'] = 0.0
         df[f'roll_std_{w}h'] = 0.0
+        
+    # FIX 2: Missing Column Safety Padding
+    # Ensure every column XGBoost expects is present in the DataFrame before slicing
+    for c in feature_cols:
+        if c not in df.columns:
+            df[c] = 0.0
+            
     return df[feature_cols].astype(np.float32)
 
 def generate_smart_schedule(forecast, weather_df, solar_kw, batt_cap):
