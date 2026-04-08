@@ -28,7 +28,7 @@ st.markdown("""
 col1, col2 = st.columns([0.8, 0.2])
 with col1:
     st.title("⚡ AI Smart Grid Forecaster & Optimizer")
-    st.caption("**Top 1% Capstone** | Live 3D Earth & Weather • Virtual Battery • AI Explainability")
+    st.caption("**Top 1% Capstone** | Live 3D Earth • Virtual Battery • Duck Curve Simulator • AI Explainability")
 with col2:
     st.image("https://cdn-icons-png.flaticon.com/512/2933/2933116.png", width=60)
 
@@ -37,24 +37,18 @@ with st.sidebar:
     st.header("🌍 Location Settings")
     st.caption("Allow GPS access to optimize your local grid:")
     
-    # Live Browser Geolocation
     loc = streamlit_geolocation()
-    
     lat, lon, resolved_city, country = None, None, "Pune", ""
     
-    # Check if user allowed GPS
     if loc and loc.get('latitude') is not None and loc.get('longitude') is not None:
         lat = loc['latitude']
         lon = loc['longitude']
         resolved_city = "Current GPS Location"
         st.success("✅ GPS Locked")
         
-        # WOW FEATURE: 3D Interactive Cyber-Globe
         fig_globe = go.Figure(go.Scattergeo(
             lon=[lon], lat=[lat],
-            mode='markers+text',
-            text=["📍 You Are Here"],
-            textposition="bottom center",
+            mode='markers+text', text=["📍 You Are Here"], textposition="bottom center",
             textfont=dict(color="white", size=12, family="Arial Black"),
             marker=dict(size=14, color='#E53935', symbol='circle', line=dict(width=2, color='white'))
         ))
@@ -70,15 +64,9 @@ with st.sidebar:
             lonaxis=dict(showgrid=True, gridcolor="#1E2A38")
         )
         
-        fig_globe.update_layout(
-            height=300, 
-            margin={"r":0,"t":0,"l":0,"b":0},
-            paper_bgcolor="rgba(0,0,0,0)", 
-            plot_bgcolor="rgba(0,0,0,0)"
-        )
+        fig_globe.update_layout(height=300, margin={"r":0,"t":0,"l":0,"b":0}, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig_globe, use_container_width=True, config={'displayModeBar': False})
         
-        # Hide the text input since we have GPS
         city_input = st.text_input("City Search (Disabled while GPS active)", value="Using GPS Coordinates", disabled=True)
     else:
         st.info("Or search manually below:")
@@ -91,11 +79,12 @@ with st.sidebar:
     has_ac = st.toggle("❄️ Air Conditioning", value=True)
     
     st.subheader("☀️ Energy Independence")
+    st.caption("Tweak these to see the Duck Curve change!")
     has_solar = st.toggle("Rooftop Solar", value=True)
-    solar_kw = st.number_input("Solar Array (kW)", 0.0, 20.0, 5.0) if has_solar else 0.0
+    solar_kw = st.slider("Solar Array (kW)", 0.0, 20.0, 5.0) if has_solar else 0.0
     
     has_battery = st.toggle("🔋 Home Battery System", value=True)
-    battery_capacity = st.number_input("Battery Size (kWh)", 0.0, 30.0, 10.0) if has_battery else 0.0
+    battery_capacity = st.slider("Battery Size (kWh)", 0.0, 30.0, 10.0) if has_battery else 0.0
 
     st.divider()
     if st.button("🔮 Run AI Optimization", use_container_width=True, type="primary"):
@@ -188,7 +177,6 @@ xgb_model, quantile_models, explainer, feature_cols = load_models()
 
 if 'run_forecast' in st.session_state and st.session_state.run_forecast:
     
-    # Resolve routing: Use GPS if available, else use text search API
     if lat is None or lon is None:
         lat, lon, resolved_city, country = get_coordinates(city_input)
     
@@ -224,8 +212,9 @@ if 'run_forecast' in st.session_state and st.session_state.run_forecast:
             
             st.success(f"✅ AI Grid Optimization Complete for **{location_title}**")
             
-            tab1, tab2, tab3, tab4 = st.tabs(["📊 Main Forecast", "🌦️ Weather Context", "💰 Savings & Carbon", "🧠 AI Explainability"])
+            tab1, tab2, tab3, tab4 = st.tabs(["📊 Main Forecast", "🌦️ Weather Context", "🦆 Duck Curve & Carbon", "🧠 AI Explainability"])
             
+            # --- TAB 1: MAIN FORECAST ---
             with tab1:
                 colA, colB, colC, colD = st.columns(4)
                 colA.metric("Raw Demand", f"{final_pred.sum():.1f} kWh")
@@ -248,6 +237,7 @@ if 'run_forecast' in st.session_state and st.session_state.run_forecast:
                 with st.expander("📅 View Detailed Smart Schedule Data"):
                     st.dataframe(schedule, use_container_width=True, hide_index=True)
 
+            # --- TAB 2: WEATHER ---
             with tab2:
                 st.markdown("### 📡 Live Telemetry Data Driving the AI")
                 w_col1, w_col2, w_col3 = st.columns(3)
@@ -261,22 +251,51 @@ if 'run_forecast' in st.session_state and st.session_state.run_forecast:
                 fig_w.update_layout(height=400, yaxis2=dict(title="Radiation", overlaying="y", side="right"))
                 st.plotly_chart(fig_w, use_container_width=True)
 
+            # --- TAB 3: NEW DUCK CURVE & CARBON SIMULATOR ---
             with tab3:
+                st.markdown("### 🦆 The Duck Curve: Peak Shaving Visualization")
+                st.caption("Notice how solar creates a 'belly' in the middle of the day, and the battery 'shaves the head' off the expensive evening peak. Try adjusting the Solar and Battery sliders in the sidebar to see this change live!")
+                
+                # Math for Carbon Stats
                 cost_no_ai = (final_pred * (schedule['Price_c/kWh'] / 100 * 83)).sum()
                 cost_with_ai = (schedule['Grid_Draw_kWh'] * schedule['Price_c/kWh'] / 100 * 83).sum()
                 saved = cost_no_ai - cost_with_ai
-                co2_saved = (final_pred.sum() - schedule['Grid_Draw_kWh'].sum()) * 0.82
                 
-                c1, c2 = st.columns(2)
+                grid_intensity_kg_kwh = 0.82 # Avg kg of CO2 per kWh of fossil grid power
+                co2_saved_kg = (final_pred.sum() - schedule['Grid_Draw_kWh'].sum()) * grid_intensity_kg_kwh
+                # 1 mature tree absorbs ~21kg of CO2 per year, which is ~0.057kg per day.
+                trees_equivalent = int(co2_saved_kg / 0.057)
+
+                # Duck Curve Plotly Chart
+                fig_duck = go.Figure()
+                
+                # Baseline Gross Demand (Grey dashed)
+                fig_duck.add_trace(go.Scatter(x=schedule['Hour'], y=final_pred, mode='lines', name='Gross Baseline Demand', line=dict(color='rgba(100,100,100,0.5)', width=3, dash='dash')))
+                
+                # Optimized Net Grid Draw (Solid Red, filled to zero)
+                fig_duck.add_trace(go.Scatter(x=schedule['Hour'], y=schedule['Grid_Draw_kWh'], mode='lines', name='Optimized Grid Draw', line=dict(color='#E53935', width=4), fill='tozeroy', fillcolor='rgba(229, 57, 53, 0.1)'))
+                
+                fig_duck.update_layout(height=400, hovermode="x unified", xaxis_title="Time of Day", yaxis_title="Grid Dependency (kWh)", margin=dict(t=10))
+                st.plotly_chart(fig_duck, use_container_width=True)
+
+                st.divider()
+                
+                # High-Impact ESG Metrics
+                c1, c2, c3 = st.columns(3)
                 with c1:
                     st.info("### 💰 Financial ROI")
-                    st.metric("Estimated Cost (No Solar/Battery)", f"₹{cost_no_ai:.0f}")
-                    st.metric("Cost with AI Smart Grid", f"₹{cost_with_ai:.0f}", delta=f"Saved ₹{saved:.0f}", delta_color="inverse")
+                    st.metric("Cost Without Assets", f"₹{cost_no_ai:.0f}")
+                    st.metric("Cost with Smart Grid", f"₹{cost_with_ai:.0f}", delta=f"Saved ₹{saved:.0f}", delta_color="inverse")
                 with c2:
-                    st.success("### 🌱 Environmental Impact")
+                    st.success("### 🏭 Carbon Offset")
                     st.metric("Grid Energy Avoided", f"{(final_pred.sum() - schedule['Grid_Draw_kWh'].sum()):.1f} kWh")
-                    st.metric("CO2 Emissions Prevented", f"{co2_saved:.1f} kg 🌳")
+                    st.metric("CO2 Emissions Prevented", f"{co2_saved_kg:.1f} kg")
+                with c3:
+                    st.warning("### 🌳 Environmental Equivalent")
+                    st.markdown(f"The carbon saved today is equivalent to the daily work of **{trees_equivalent} mature trees**.")
+                    st.markdown("🌲" * min(trees_equivalent, 30) + ("..." if trees_equivalent > 30 else ""))
 
+            # --- TAB 4: SHAP AI ---
             with tab4:
                 st.markdown("### 🧠 Real-Time AI Decision Drivers")
                 st.caption("This chart shows exactly which weather or time features caused the AI to increase or decrease its energy prediction for the upcoming hours.")
