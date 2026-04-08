@@ -6,3 +6,5 @@ joblib
 openmeteo-requests
 requests-cache
 retry-requests
+matplotlib
+shap
