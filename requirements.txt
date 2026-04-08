@@ -11,3 +11,4 @@ shap
 xgboost
 scikit-learn
 requests
+streamlit-geolocation
