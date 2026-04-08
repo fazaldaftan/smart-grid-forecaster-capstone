@@ -12,6 +12,7 @@ import requests_cache
 import matplotlib.pyplot as plt
 import shap
 from streamlit_geolocation import streamlit_geolocation
+import streamlit.components.v1 as components  # Required for the Live Wind Map
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="Smart Grid AI Forecaster", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
@@ -28,7 +29,7 @@ st.markdown("""
 col1, col2 = st.columns([0.8, 0.2])
 with col1:
     st.title("⚡ AI Smart Grid Forecaster & Optimizer")
-    st.caption("**Top 1% Capstone** | Live 3D Earth • Virtual Battery • Interactive Duck Curve")
+    st.caption("**Top 1% Capstone** | Live 3D Earth • Live AQI & Wind Maps • Virtual Battery • AI Duck Curve")
 with col2:
     st.image("https://cdn-icons-png.flaticon.com/512/2933/2933116.png", width=60)
 
@@ -80,7 +81,6 @@ with st.sidebar:
     battery_capacity = st.slider("Battery Size (kWh)", 0.0, 30.0, 10.0) if has_battery else 0.0
 
     st.divider()
-    # When clicked, triggers the heavy API fetch
     if st.button("🔮 Run AI Optimization", use_container_width=True, type="primary"):
         st.session_state.fetch_data = True
         st.toast("Fetching live weather and running AI...", icon="🤖")
@@ -138,8 +138,7 @@ def generate_smart_schedule(forecast, weather_df, current_solar_kw, current_batt
             solar = min(current_solar_kw, rad / 1000 * current_solar_kw * 0.75) if current_solar_kw > 0 else 0
             
         net_demand_before_batt = demand - solar
-        batt_charge = 0
-        batt_discharge = 0
+        batt_charge, batt_discharge = 0, 0
         
         if net_demand_before_batt < 0: 
             batt_charge = min(abs(net_demand_before_batt), current_batt_cap - current_battery)
@@ -152,16 +151,7 @@ def generate_smart_schedule(forecast, weather_df, current_solar_kw, current_batt
             net_grid = net_demand_before_batt - batt_discharge
             
         rec = "🛑 Peak Avoidance" if price == 28 else "☀️ Charging Battery" if batt_charge > 0 else "🔋 Discharging" if batt_discharge > 0 else "✅ Normal"
-        
-        data.append({
-            'Hour': dt.strftime('%H:%M'), 
-            'Demand_kWh': round(demand, 2), 
-            'Solar_kWh': round(solar, 2), 
-            'Battery_Level': round(current_battery, 2),
-            'Grid_Draw_kWh': round(net_grid, 2), 
-            'Price_c/kWh': price, 
-            'Action': rec
-        })
+        data.append({'Hour': dt.strftime('%H:%M'), 'Demand_kWh': round(demand, 2), 'Solar_kWh': round(solar, 2), 'Battery_Level': round(current_battery, 2), 'Grid_Draw_kWh': round(net_grid, 2), 'Price_c/kWh': price, 'Action': rec})
     return pd.DataFrame(data)
 
 # 5. MAIN EXECUTION
@@ -174,42 +164,69 @@ if st.session_state.get('fetch_data', False):
     if lat is not None:
         location_title = f"{resolved_city}, {country}" if country else resolved_city
         st.session_state['location_title'] = location_title
+        st.session_state['lat'] = lat
+        st.session_state['lon'] = lon
         
+        # --- 1. Hourly Forecast Fetch ---
         cache_session = requests_cache.CachedSession('.cache', expire_after=3600)
         openmeteo = openmeteo_requests.Client(session=retry(cache_session, retries=5))
-        response = openmeteo.weather_api("https://api.open-meteo.com/v1/forecast", params={"latitude": lat, "longitude": lon, "hourly": ["temperature_2m", "cloud_cover", "shortwave_radiation", "wind_speed_10m"], "forecast_days": 2, "timezone": "auto"})[0]
+        params = {
+            "latitude": lat, "longitude": lon, 
+            "hourly": ["temperature_2m", "cloud_cover", "shortwave_radiation", "wind_speed_10m", "wind_gusts_10m", "relative_humidity_2m"], 
+            "forecast_days": 2, "timezone": "auto"
+        }
+        response = openmeteo.weather_api("https://api.open-meteo.com/v1/forecast", params=params)[0]
         hourly = response.Hourly()
         
         time_index = pd.date_range(start=pd.to_datetime(hourly.Time(), unit="s", utc=True), end=pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True), freq=pd.Timedelta(seconds=hourly.Interval()), inclusive='left')
         weather_data = {"datetime": time_index}
-        for i, var in enumerate(["temperature_2m", "cloud_cover", "shortwave_radiation", "wind_speed_10m"]): weather_data[var] = hourly.Variables(i).ValuesAsNumpy()[:len(time_index)]
+        for i, var in enumerate(["temperature_2m", "cloud_cover", "shortwave_radiation", "wind_speed_10m", "wind_gusts_10m", "relative_humidity_2m"]): 
+            weather_data[var] = hourly.Variables(i).ValuesAsNumpy()[:len(time_index)]
         weather_df = pd.DataFrame(weather_data).set_index('datetime').head(24)
         
+        # --- 2. Advanced Daily Details (Sunrise/Sunset/High/Low) ---
+        try:
+            daily_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset&timezone=auto"
+            daily_data = requests.get(daily_url).json()
+            st.session_state['today_high'] = daily_data['daily']['temperature_2m_max'][0]
+            st.session_state['today_low'] = daily_data['daily']['temperature_2m_min'][0]
+            st.session_state['sunrise'] = datetime.fromisoformat(daily_data['daily']['sunrise'][0]).strftime('%I:%M %p')
+            st.session_state['sunset'] = datetime.fromisoformat(daily_data['daily']['sunset'][0]).strftime('%I:%M %p')
+        except:
+            st.session_state['today_high'], st.session_state['today_low'], st.session_state['sunrise'], st.session_state['sunset'] = 0, 0, "N/A", "N/A"
+
+        # --- 3. Live Air Quality Fetch ---
+        try:
+            aqi_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi,pm10,pm2_5&timezone=auto"
+            aqi_data = requests.get(aqi_url).json()
+            st.session_state['aqi_val'] = aqi_data['current']['us_aqi']
+            st.session_state['pm10'] = aqi_data['current']['pm10']
+            st.session_state['pm25'] = aqi_data['current']['pm2_5']
+        except:
+            st.session_state['aqi_val'], st.session_state['pm10'], st.session_state['pm25'] = 0, 0, 0
+
+        # AI Feature Engineering
         dummy = pd.DataFrame(index=weather_df.index).join(weather_df)
-        for col in ['Global_active_power','Global_reactive_power','Voltage','Global_intensity','Sub_metering_1','Sub_metering_2','Sub_metering_3','relative_humidity_2m','precipitation']: dummy[col] = 0.0
+        for col in ['Global_active_power','Global_reactive_power','Voltage','Global_intensity','Sub_metering_1','Sub_metering_2','Sub_metering_3','precipitation']: dummy[col] = 0.0
         dummy['energy_kwh'] = 0.0
         user_feat = engineer_features(dummy)
         for c in feature_cols: 
             if c not in user_feat.columns: user_feat[c] = 0.0
         user_feat = user_feat[feature_cols].astype(np.float32)
         
-        # Save base models to session state
         st.session_state['weather_df'] = weather_df
         st.session_state['base_median'] = quantile_models[0.50].predict(user_feat)
         st.session_state['user_feat'] = user_feat
         st.session_state['app_ready'] = True
-        st.session_state['fetch_data'] = False # Turn off fetch switch
+        st.session_state['fetch_data'] = False
     else:
         st.error("❌ City not found. Please try again.")
 
-# REACTIVE UI (Updates instantly when sliders change)
+# REACTIVE UI
 if st.session_state.get('app_ready', False):
-    
-    # 1. Apply Dynamic Scales based on current slider values
     scale = (num_people / 4.0) * (house_size / 120.0) * (1.45 if has_ac else 1.0)
     final_pred = np.clip(st.session_state['base_median'] * scale, 0, None)
     
-    # 2. Generate Live Schedule
     active_solar = solar_kw if has_solar else 0
     active_battery = battery_capacity if has_battery else 0
     weather_df = st.session_state['weather_df']
@@ -217,41 +234,69 @@ if st.session_state.get('app_ready', False):
     
     st.success(f"✅ AI Grid Optimization Active for **{st.session_state['location_title']}**")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Main Forecast", "🌦️ Weather Context", "🦆 Duck Curve & Carbon", "🧠 AI Explainability"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Main Forecast", "📡 Advanced Weather", "🦆 Duck Curve & Carbon", "🧠 AI Explainability"])
     
     with tab1:
         colA, colB, colC, colD = st.columns(4)
         colA.metric("Raw Demand", f"{final_pred.sum():.1f} kWh")
         colB.metric("Solar Generated", f"{schedule['Solar_kWh'].sum():.1f} kWh")
         colC.metric("Net Grid Draw", f"{schedule['Grid_Draw_kWh'].sum():.1f} kWh", delta=f"-{(final_pred.sum() - schedule['Grid_Draw_kWh'].sum()):.1f} kWh avoided", delta_color="inverse")
-        
         max_grid_draw = schedule['Grid_Draw_kWh'].max()
-        stress = "🔴 High" if max_grid_draw > 5 else "🟡 Medium" if max_grid_draw > 2.5 else "🟢 Low"
-        colD.metric("Grid Stress Level", stress)
+        colD.metric("Grid Stress Level", "🔴 High" if max_grid_draw > 5 else "🟡 Medium" if max_grid_draw > 2.5 else "🟢 Low")
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=schedule['Hour'], y=final_pred, mode='lines', name='Total Home Demand', line=dict(color='#888', dash='dot')))
         fig.add_trace(go.Scatter(x=schedule['Hour'], y=schedule['Grid_Draw_kWh'], mode='lines+markers', name='Actual Grid Draw', line=dict(color='#E53935', width=4)))
         if has_solar: fig.add_trace(go.Bar(x=schedule['Hour'], y=schedule['Solar_kWh'], name='Solar Yield', marker_color='#FDD835', opacity=0.6))
         if has_battery: fig.add_trace(go.Scatter(x=schedule['Hour'], y=schedule['Battery_Level'], mode='lines', name='Battery SoC', fill='tozeroy', line=dict(color='#4CAF50')))
-        
         fig.update_layout(title="24-Hour AI Energy Profile", xaxis_title="Time", yaxis_title="Energy (kWh)", height=500, hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
         
         with st.expander("📅 View Detailed Smart Schedule Data"):
             st.dataframe(schedule, use_container_width=True, hide_index=True)
 
+    # --- UPDATED ADVANCED WEATHER TAB ---
     with tab2:
-        w_col1, w_col2, w_col3 = st.columns(3)
-        w_col1.metric("Current Temp", f"{weather_df['temperature_2m'].iloc[0]:.1f}°C")
-        w_col2.metric("Cloud Cover", f"{weather_df['cloud_cover'].iloc[0]:.0f}%")
-        w_col3.metric("Wind Speed", f"{weather_df['wind_speed_10m'].iloc[0]:.1f} km/h")
+        st.markdown("### 🛰️ Live Telemetry & Environmental Data")
         
-        fig_w = go.Figure()
-        fig_w.add_trace(go.Scatter(x=schedule['Hour'], y=weather_df['temperature_2m'], name="Temp (°C)", line=dict(color="#FF7043")))
-        fig_w.add_trace(go.Scatter(x=schedule['Hour'], y=weather_df['shortwave_radiation'], name="Solar Radiation (W/m²)", yaxis="y2", line=dict(color="#FFCA28")))
-        fig_w.update_layout(height=400, yaxis2=dict(title="Radiation", overlaying="y", side="right"))
-        st.plotly_chart(fig_w, use_container_width=True)
+        # Row 1: Temperature & Sun
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Current Temp", f"{weather_df['temperature_2m'].iloc[0]:.1f}°C")
+        c2.metric("Today's Range", f"H: {st.session_state['today_high']:.1f}° | L: {st.session_state['today_low']:.1f}°")
+        c3.metric("Relative Humidity", f"{weather_df['relative_humidity_2m'].iloc[0]:.0f}%")
+        c4.metric("Sunrise / Sunset", f"🌅 {st.session_state['sunrise']} | 🌇 {st.session_state['sunset']}")
+
+        # Row 2: Wind & Air Quality
+        c5, c6, c7, c8 = st.columns(4)
+        c5.metric("Sustained Wind", f"{weather_df['wind_speed_10m'].iloc[0]:.1f} km/h", f"Gusts up to {weather_df['wind_gusts_10m'].iloc[0]:.1f} km/h", delta_color="off")
+        
+        aqi_val = st.session_state['aqi_val']
+        aqi_status = "🟢 Good" if aqi_val <= 50 else "🟡 Moderate" if aqi_val <= 100 else "🟠 Unhealthy" if aqi_val <= 150 else "🔴 Hazardous"
+        c6.metric("Air Quality Index (AQI)", f"{aqi_val}", aqi_status, delta_color="off")
+        c7.metric("Particulate Matter (µg/m³)", f"PM2.5: {st.session_state['pm25']}", f"PM10: {st.session_state['pm10']}", delta_color="off")
+        c8.metric("Cloud Cover", f"{weather_df['cloud_cover'].iloc[0]:.0f}%")
+
+        st.divider()
+
+        # Row 3: Visualizations (Chart + Interactive Wind Map)
+        col_chart, col_map = st.columns([1.2, 1])
+        with col_chart:
+            st.markdown("#### 🌡️ 24-Hour Temp & Radiation")
+            fig_w = go.Figure()
+            fig_w.add_trace(go.Scatter(x=schedule['Hour'], y=weather_df['temperature_2m'], name="Temp (°C)", line=dict(color="#FF7043")))
+            fig_w.add_trace(go.Scatter(x=schedule['Hour'], y=weather_df['shortwave_radiation'], name="Solar Radiation (W/m²)", yaxis="y2", line=dict(color="#FFCA28")))
+            fig_w.update_layout(height=400, yaxis2=dict(title="Radiation (W/m²)", overlaying="y", side="right"), margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig_w, use_container_width=True)
+            
+        with col_map:
+            st.markdown("#### 🌬️ Live Interactive Wind Map")
+            # We embed Windy.com directly at the exact coordinates!
+            windy_html = f"""
+            <iframe width="100%" height="400" 
+            src="https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricTemp=°C&metricWind=km/h&zoom=10&overlay=wind&product=ecmwf&level=surface&lat={st.session_state['lat']}&lon={st.session_state['lon']}" 
+            frameborder="0" style="border-radius: 10px;"></iframe>
+            """
+            components.html(windy_html, height=400)
 
     with tab3:
         st.markdown("### 🦆 Interactive Carbon Simulator")
@@ -262,15 +307,9 @@ if st.session_state.get('app_ready', False):
         trees_equivalent = co2_saved_kg / 0.057
         
         c1, c2, c3 = st.columns(3)
-        with c1:
-            st.info("### 📉 Daily Offset")
-            st.metric("Grid Energy Avoided", f"{daily_offset:.1f} kWh")
-        with c2:
-            st.success("### 🏭 Carbon Prevented")
-            st.metric("CO2 Prevented", f"{co2_saved_kg:.1f} kg")
-        with c3:
-            st.warning("### 🌳 Trees Equivalent")
-            st.metric("Daily Absorption Equivalent", f"{trees_equivalent:.2f} units")
+        c1.info(f"### 📉 Daily Offset\n**{daily_offset:.1f} kWh** avoided")
+        c2.success(f"### 🏭 Carbon Prevented\n**{co2_saved_kg:.1f} kg** of CO2")
+        c3.warning(f"### 🌳 Trees Equivalent\n**{trees_equivalent:.2f} units** of absorption")
 
         fig_duck = go.Figure()
         fig_duck.add_trace(go.Scatter(x=schedule['Hour'], y=final_pred, mode='lines', name='Gross Baseline Demand', line=dict(color='rgba(100,100,100,0.5)', width=3, dash='dash')))
