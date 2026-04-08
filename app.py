@@ -25,7 +25,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 2. HELPER FUNCTIONS
+# 2. HELPER FUNCTIONS 
 @st.cache_data(ttl=3600)
 def get_coordinates(city_name):
     url = f"https://geocoding-api.open-meteo.com/v1/search?name={city_name}&count=1&format=json"
@@ -177,7 +177,6 @@ with st.sidebar:
 # 5. MAIN EXECUTION
 xgb_model, quantile_models, explainer, feature_cols = load_models()
 
-# FETCH DATA ONLY ONCE
 if st.session_state.get('fetch_data', False):
     if feature_cols is None or quantile_models is None:
         st.error("❌ Cannot run AI Optimization: Models failed to load. Please check the CRITICAL ERROR message above.")
@@ -188,6 +187,7 @@ if st.session_state.get('fetch_data', False):
         st.session_state['lat'] = lat
         st.session_state['lon'] = lon
         
+        # --- 1. Hourly Forecast Fetch (For the AI / Charts) ---
         cache_session = requests_cache.CachedSession('.cache', expire_after=3600)
         openmeteo = openmeteo_requests.Client(session=retry(cache_session, retries=5))
         params = {
@@ -204,16 +204,29 @@ if st.session_state.get('fetch_data', False):
             weather_data[var] = hourly.Variables(i).ValuesAsNumpy()[:len(time_index)]
         weather_df = pd.DataFrame(weather_data).set_index('datetime').head(24)
         
+        # --- 2. THE FIX: Explicitly fetch TRUE Current Weather bypasssing midnight logic ---
         try:
-            daily_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset&timezone=auto"
+            daily_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,cloud_cover,wind_speed_10m,wind_gusts_10m&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset&timezone=auto"
             daily_data = requests.get(daily_url).json()
+            
+            # True Live Data
+            st.session_state['current_temp'] = daily_data['current']['temperature_2m']
+            st.session_state['current_humidity'] = daily_data['current']['relative_humidity_2m']
+            st.session_state['current_wind'] = daily_data['current']['wind_speed_10m']
+            st.session_state['current_gusts'] = daily_data['current']['wind_gusts_10m']
+            st.session_state['current_clouds'] = daily_data['current']['cloud_cover']
+            
+            # True Daily Highs / Lows
             st.session_state['today_high'] = daily_data['daily']['temperature_2m_max'][0]
             st.session_state['today_low'] = daily_data['daily']['temperature_2m_min'][0]
             st.session_state['sunrise'] = datetime.fromisoformat(daily_data['daily']['sunrise'][0]).strftime('%I:%M %p')
             st.session_state['sunset'] = datetime.fromisoformat(daily_data['daily']['sunset'][0]).strftime('%I:%M %p')
         except:
+            # Fallbacks if API fails
+            st.session_state['current_temp'], st.session_state['current_humidity'], st.session_state['current_wind'], st.session_state['current_gusts'], st.session_state['current_clouds'] = 0, 0, 0, 0, 0
             st.session_state['today_high'], st.session_state['today_low'], st.session_state['sunrise'], st.session_state['sunset'] = 0, 0, "N/A", "N/A"
 
+        # --- 3. Live Air Quality Fetch ---
         try:
             aqi_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi,pm10,pm2_5&timezone=auto"
             aqi_data = requests.get(aqi_url).json()
@@ -223,6 +236,7 @@ if st.session_state.get('fetch_data', False):
         except:
             st.session_state['aqi_val'], st.session_state['pm10'], st.session_state['pm25'] = 0, 0, 0
 
+        # AI Feature Engineering
         dummy = pd.DataFrame(index=weather_df.index).join(weather_df)
         for col in ['Global_active_power','Global_reactive_power','Voltage','Global_intensity','Sub_metering_1','Sub_metering_2','Sub_metering_3','precipitation']: dummy[col] = 0.0
         dummy['energy_kwh'] = 0.0
@@ -235,7 +249,7 @@ if st.session_state.get('fetch_data', False):
         st.session_state['app_ready'] = True
         st.session_state['fetch_data'] = False
 
-# REACTIVE UI (With Bulletproof Session State Check)
+# REACTIVE UI
 if st.session_state.get('app_ready', False):
     if 'base_median' not in st.session_state or 'weather_df' not in st.session_state:
         st.warning("⚠️ Session memory was cleared. Please click 'Run AI Optimization' in the sidebar to refresh the dashboard.")
@@ -274,20 +288,21 @@ if st.session_state.get('app_ready', False):
         with tab2:
             st.markdown("### 🛰️ Live Telemetry & Environmental Data")
             
+            # NOW USING TRUE LIVE DATA
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Current Temp", f"{weather_df['temperature_2m'].iloc[0]:.1f}°C")
+            c1.metric("Current Temp", f"{st.session_state['current_temp']:.1f}°C")
             c2.metric("Today's Range", f"H: {st.session_state['today_high']:.1f}° | L: {st.session_state['today_low']:.1f}°")
-            c3.metric("Relative Humidity", f"{weather_df['relative_humidity_2m'].iloc[0]:.0f}%")
+            c3.metric("Relative Humidity", f"{st.session_state['current_humidity']:.0f}%")
             c4.metric("Sunrise / Sunset", f"🌅 {st.session_state['sunrise']} | 🌇 {st.session_state['sunset']}")
 
             c5, c6, c7, c8 = st.columns(4)
-            c5.metric("Sustained Wind", f"{weather_df['wind_speed_10m'].iloc[0]:.1f} km/h", f"Gusts up to {weather_df['wind_gusts_10m'].iloc[0]:.1f} km/h", delta_color="off")
+            c5.metric("Sustained Wind", f"{st.session_state['current_wind']:.1f} km/h", f"Gusts up to {st.session_state['current_gusts']:.1f} km/h", delta_color="off")
             
             aqi_val = st.session_state['aqi_val']
             aqi_status = "🟢 Good" if aqi_val <= 50 else "🟡 Moderate" if aqi_val <= 100 else "🟠 Unhealthy" if aqi_val <= 150 else "🔴 Hazardous"
             c6.metric("Air Quality Index (AQI)", f"{aqi_val}", aqi_status, delta_color="off")
             c7.metric("Particulate Matter (µg/m³)", f"PM2.5: {st.session_state['pm25']}", f"PM10: {st.session_state['pm10']}", delta_color="off")
-            c8.metric("Cloud Cover", f"{weather_df['cloud_cover'].iloc[0]:.0f}%")
+            c8.metric("Cloud Cover", f"{st.session_state['current_clouds']:.0f}%")
 
             st.divider()
 
