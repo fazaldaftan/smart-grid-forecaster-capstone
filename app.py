@@ -59,16 +59,15 @@ with st.sidebar:
             marker=dict(size=14, color='#E53935', symbol='circle', line=dict(width=2, color='white'))
         ))
         
-       fig_globe.update_geos(
-            projection_type="orthographic", # THIS MAKES IT 3D!
+        fig_globe.update_geos(
+            projection_type="orthographic",
             showcoastlines=True, coastlinecolor="#00E5FF",
             showland=True, landcolor="#121212",
             showocean=True, oceancolor="#0A192F",
             showlakes=True, lakecolor="#0A192F",
             showcountries=True, countrycolor="#1E2A38",
-            lataxis=dict(showgrid=True, gridcolor="#1E2A38"), # Safely assigned!
-            lonaxis=dict(showgrid=True, gridcolor="#1E2A38"), # Safely assigned!
-            bgcolor="rgba(0,0,0,0)"
+            lataxis=dict(showgrid=True, gridcolor="#1E2A38"),
+            lonaxis=dict(showgrid=True, gridcolor="#1E2A38")
         )
         
         fig_globe.update_layout(
