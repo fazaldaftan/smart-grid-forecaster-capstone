@@ -86,8 +86,16 @@ def generate_smart_schedule(forecast, weather_df):
             solar = min(3.5, rad / 1000 * 3.5 * 0.75)
         net = max(0, demand - solar)
         rec = "✅ Run heavy appliances" if price <= 11 else "☀️ Maximize solar use" if solar > 1.0 else "❄️ High AC demand" if weather_df['temperature_2m'].iloc[i] > 28 else "Normal"
-        data.append({'Hour': dt.strftime('%H:%M'), 'Demand_kWh': round(demand,2), 'Solar_kWh': round(solar,2), 
-                     'Net_kWh': round(net,2), 'Recommendation': rec})
+        
+        # FIX APPLIED HERE: Added 'Price_c/kWh': price to the dictionary
+        data.append({
+            'Hour': dt.strftime('%H:%M'), 
+            'Demand_kWh': round(demand,2), 
+            'Solar_kWh': round(solar,2), 
+            'Net_kWh': round(net,2), 
+            'Price_c/kWh': price, 
+            'Recommendation': rec
+        })
     return pd.DataFrame(data)
 
 # Main Forecast
@@ -162,7 +170,8 @@ if 'run_forecast' in st.session_state and st.session_state.run_forecast:
         st.plotly_chart(fig, use_container_width=True)
         
         st.subheader("Smart Grid Schedule")
-        st.dataframe(schedule[['Hour', 'Demand_kWh', 'Solar_kWh', 'Net_kWh', 'Recommendation']].round(2), use_container_width=True)
+        # Added the new Price column to your dataframe view so you can see it working!
+        st.dataframe(schedule[['Hour', 'Demand_kWh', 'Solar_kWh', 'Net_kWh', 'Price_c/kWh', 'Recommendation']].round(2), use_container_width=True)
         
         st.metric("Estimated Daily Cost (Smart Schedule)", f"₹{daily_cost:.0f}")
 
